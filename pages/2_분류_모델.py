@@ -152,10 +152,11 @@ if use_bmi:
     train_df["bmi"] = train_df["bmi"].fillna(bmi_median)
     test_df["bmi"] = test_df["bmi"].fillna(bmi_median)
 
-X_train = train_df[selected_features]
-y_train = train_df["stroke"]
-X_test = test_df[selected_features]
-y_test = test_df["stroke"]
+# 열 순서를 selected_features 순서로 명확히 고정
+X_train = train_df[selected_features].reset_index(drop=True)
+y_train = train_df["stroke"].reset_index(drop=True)
+X_test = test_df[selected_features].reset_index(drop=True)
+y_test = test_df["stroke"].reset_index(drop=True)
 
 st.markdown('<div class="section-header">📦 데이터 나누기 결과</div>', unsafe_allow_html=True)
 col_a, col_b, col_c = st.columns(3)
@@ -397,19 +398,32 @@ st.markdown('<div class="section-header">🌳 의사결정트리 구조 보기</
 
 tree = tree_model.tree_
 feature_names = selected_features
+tree_classes = tree_model.classes_  # 예: [0, 1] 순서 확인용
 
 def get_node_info(node_id):
-    """해당 노드에 도달한 훈련 데이터 수, 뇌졸중 수, 비율 계산"""
-    value = tree.value[node_id][0]
-    n_no = value[0]
-    n_yes = value[1] if len(value) > 1 else 0
-    n_total = n_no + n_yes
+    """
+    해당 노드에 도달한 훈련 데이터 수, 뇌졸중(1)인 사람 수, 비율을 계산.
+    tree.value는 [해당 노드의 클래스별 가중 인원 수] 형태이며,
+    class_weight를 안 줬으면 실제 인원 수와 같습니다.
+    tree_model.classes_ 순서에 맞춰 1(뇌졸중)의 위치를 찾습니다.
+    """
+    value = tree.value[node_id][0]  # 예: [클래스0 개수, 클래스1 개수]
+    n_total = int(tree.n_node_samples[node_id])
+
+    # classes_ 배열에서 1(뇌졸중)이 몇 번째 위치인지 찾기
+    class_list = list(tree_classes)
+    if 1 in class_list:
+        idx_yes = class_list.index(1)
+        n_yes = int(round(value[idx_yes]))
+    else:
+        n_yes = 0
+
     ratio = n_yes / n_total if n_total > 0 else 0
-    return int(n_total), int(n_yes), ratio
+    return n_total, n_yes, ratio
 
 def build_dot(node_id=0):
     lines = []
-    is_leaf = tree.children_left[node_id] == tree.children_right[node_id]
+    is_leaf = (tree.children_left[node_id] == -1) and (tree.children_right[node_id] == -1)
     n_total, n_yes, ratio = get_node_info(node_id)
 
     if is_leaf:
@@ -419,7 +433,8 @@ def build_dot(node_id=0):
         node_label = f"{label_text}\\n인원 {n_total}명 (뇌졸중 {n_yes}명)\\n비율 {ratio*100:.1f}%"
         lines.append(f'{node_id} [label="{node_label}", style=filled, fillcolor="{fill_color}", shape=box];')
     else:
-        feat = feature_names[tree.feature[node_id]]
+        feat_idx = tree.feature[node_id]
+        feat = feature_names[feat_idx]
         feat_kor = kor_name[feat]
         threshold = tree.threshold[node_id]
         node_label = f"{feat_kor} <= {threshold:.2f} ?\\n인원 {n_total}명 (뇌졸중 {n_yes}명)\\n비율 {ratio*100:.1f}%"
@@ -442,7 +457,8 @@ dot_string = "digraph Tree {\nnode [fontname=\"Malgun Gothic\"];\nedge [fontname
 st.graphviz_chart(dot_string)
 
 # 리프 노드 통계
-leaf_ids = [i for i in range(tree.node_count) if tree.children_left[i] == tree.children_right[i]]
+leaf_ids = [i for i in range(tree.node_count)
+            if tree.children_left[i] == -1 and tree.children_right[i] == -1]
 leaf_count = len(leaf_ids)
 no_answer_count = 0
 for leaf_id in leaf_ids:
@@ -450,8 +466,8 @@ for leaf_id in leaf_ids:
     if ratio < 0.5:
         no_answer_count += 1
 
-used_features_idx = set(tree.feature[tree.feature >= 0])
-used_features = [feature_names[i] for i in used_features_idx]
+used_feature_indices = set(f for f in tree.feature if f != -2)
+used_features = [feature_names[i] for i in used_feature_indices]
 used_features_kor = [kor_name[f] for f in used_features]
 not_used_features_kor = [kor_name[f] for f in selected_features if f not in used_features]
 
